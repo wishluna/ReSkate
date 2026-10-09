@@ -26,31 +26,47 @@ void panel_title(const Fonts& fonts, const char* text) {
     ImGui::PopFont();
 }
 
+namespace {
+
+// Keeps a panel or page in front, taking focus back after a click behind it,
+// but not from its own open combo or popup, nor from its own children: the
+// controller's selection lives in the focused window, which is often a list
+// or the nav rail inside the page.
+void keep_focus() {
+    if (!ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) &&
+        !ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows))
+        ImGui::SetWindowFocus();
+}
+
+} // namespace
+
 ImVec2 begin_panel(const char* id, ImVec2 size, ImVec2 panel) {
     ImGui::SetNextWindowPos(ImVec2((size.x - panel.x) * 0.5f, (size.y - panel.y) * 0.5f));
     ImGui::SetNextWindowSize(panel);
-    // Keep panels in front, but not over their own open combo or popup.
-    if (!ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)) ImGui::SetNextWindowFocus();
     ImGui::Begin(id, nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
+    keep_focus();
     return panel;
 }
 
 ImVec2 begin_page(const char* id, ImVec2 size) {
     ImGui::SetNextWindowPos(ImVec2(0, 0));
     ImGui::SetNextWindowSize(size);
-    if (!ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)) ImGui::SetNextWindowFocus();
     // Opaque, and darker than a tile: a page covers the window, so the main
     // screen must not show through, and its tiles need something to sit on.
     ImGui::PushStyleColor(ImGuiCol_WindowBg, ImGui::ColorConvertU32ToFloat4(rgba(14, 15, 18)));
     ImGui::Begin(id, nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings);
     ImGui::PopStyleColor();
+    keep_focus();
     return size;
 }
 
-bool tile_hit(const char* id, ImVec2 position, ImVec2 size, bool enabled, bool& hovered) {
+bool tile_hit(const char* id, ImVec2 position, ImVec2 size, bool enabled, bool& hovered, TileNav nav) {
     ImGui::SetCursorScreenPos(position);
     ImGui::BeginDisabled(!enabled);
-    const bool pressed = ImGui::InvisibleButton(id, size);
+    if (nav == TileNav::drawn) ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
+    const bool pressed = ImGui::InvisibleButton(id, size,
+        nav == TileNav::none ? ImGuiButtonFlags_None : ImGuiButtonFlags_EnableNav);
+    if (nav == TileNav::drawn) ImGui::PopStyleColor();
     hovered = enabled && ImGui::IsItemHovered();
     ImGui::EndDisabled();
     if (hovered) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
@@ -114,18 +130,29 @@ bool list_row(const char* id, float width, float height, bool ticked) {
     ImGui::PushStyleColor(ImGuiCol_Header, ImVec4(0, 0, 0, 0));
     ImGui::PushStyleColor(ImGuiCol_HeaderHovered, ImGui::ColorConvertU32ToFloat4(rgba(255, 255, 255, 0.055f)));
     ImGui::PushStyleColor(ImGuiCol_HeaderActive, ImGui::ColorConvertU32ToFloat4(rgba(255, 255, 255, 0.09f)));
+    // The controller's outline goes inside the row, drawn here: ImGui's sits
+    // outside it, where the next row's background covers its bottom edge.
+    const ImU32 outline = ImGui::GetColorU32(ImGuiCol_NavCursor);
+    ImGui::PushStyleColor(ImGuiCol_NavCursor, ImVec4(0, 0, 0, 0));
+    // No item spacing: a Selectable widens itself by half of it on every
+    // side, which tints a strip of the neighbouring rows and sticks out past
+    // the outline.
+    ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(0, 0));
     const bool pressed = ImGui::Selectable(id, false, ImGuiSelectableFlags_AllowOverlap, ImVec2(width, height));
-    ImGui::PopStyleColor(3);
+    ImGui::PopStyleVar();
+    ImGui::PopStyleColor(4);
     if (ImGui::IsItemHovered()) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
     if (ticked) draw->AddRectFilled(start, ImVec2(start.x + S(3), end.y), color::blue);
     draw->AddLine(ImVec2(start.x, end.y - S(1)), ImVec2(end.x, end.y - S(1)), rgba(255, 255, 255, 0.07f), S(1));
+    if (ImGui::IsItemFocused())
+        draw->AddRect(ImVec2(start.x + S(1), start.y + S(1)), ImVec2(end.x - S(1), end.y - S(1)), outline, 0, 0, S(2));
     return pressed;
 }
 
 bool toggle(const char* id, bool* on) {
     const ImVec2 size(S(42), S(22));
     const ImVec2 start = ImGui::GetCursorScreenPos();
-    const bool pressed = ImGui::InvisibleButton(id, size);
+    const bool pressed = ImGui::InvisibleButton(id, size, ImGuiButtonFlags_EnableNav);
     if (pressed) *on = !*on;
     const bool hovered = ImGui::IsItemHovered();
     if (hovered) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
@@ -140,7 +167,7 @@ bool toggle(const char* id, bool* on) {
 
 bool more_button(const char* id, float size) {
     const ImVec2 start = ImGui::GetCursorScreenPos();
-    const bool pressed = ImGui::InvisibleButton(id, ImVec2(size, size));
+    const bool pressed = ImGui::InvisibleButton(id, ImVec2(size, size), ImGuiButtonFlags_EnableNav);
     const bool hovered = ImGui::IsItemHovered();
     if (hovered) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
     auto* draw = ImGui::GetWindowDrawList();
@@ -165,7 +192,32 @@ void open_url(std::string_view url) {
 namespace {
 
 LRESULT CALLBACK window_procedure(HWND window, UINT message, WPARAM wparam, LPARAM lparam) {
-    if (g_capturing_key && (message == WM_KEYDOWN || message == WM_SYSKEYDOWN)) {
+    switch (message) {
+    case WM_MOUSEMOVE: {
+        // Windows also sends moves that did not move (a window shown under the
+        // pointer); only real movement hands the screen back to the mouse.
+        static LPARAM last = -1;
+        if (lparam != last) controller_other_input();
+        last = lparam;
+        break;
+    }
+    case WM_LBUTTONDOWN:
+    case WM_RBUTTONDOWN:
+    case WM_MBUTTONDOWN:
+    case WM_MOUSEWHEEL:
+        controller_other_input();
+        break;
+    case WM_KEYDOWN:
+    case WM_SYSKEYDOWN:
+        if (!pad_echo()) controller_other_input();
+        break;
+    case WM_DEVICECHANGE:
+        controller_devices_changed();
+        break;
+    default:
+        break;
+    }
+    if (g_capturing_key && (message == WM_KEYDOWN || message == WM_SYSKEYDOWN) && !pad_echo()) {
         // Tell left and right modifiers apart so they can be refused by name.
         auto key = static_cast<unsigned>(wparam);
         if (key == VK_SHIFT || key == VK_CONTROL || key == VK_MENU)
@@ -294,7 +346,7 @@ void apply_style() {
     colours[ImGuiCol_ModalWindowDimBg] = rgb(rgba(4, 6, 9, 0.72f));
     colours[ImGuiCol_Separator] = rgb(color::outline);
     colours[ImGuiCol_TextSelectedBg] = rgb(rgba(1, 131, 255, 0.45f));
-    colours[ImGuiCol_NavHighlight] = ImVec4(0, 0, 0, 0);
+    colours[ImGuiCol_NavCursor] = ImVec4(0, 0, 0, 0);   // controller_frame shows it while a controller is in use
 }
 
 
@@ -366,6 +418,10 @@ int run(const launcher_app::Session& session, const std::vector<std::wstring>& a
     ImGui::CreateContext();
     ImGui::GetIO().IniFilename = nullptr;
     ImGui::GetIO().LogFilename = nullptr;
+    // A controller moves the selection (gui_controller.cpp). B with nothing to
+    // close keeps the selection where it is.
+    ImGui::GetIO().ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;
+    ImGui::GetIO().ConfigNavEscapeClearFocusItem = false;
     const auto fonts = load_fonts();
     apply_style();
     ImGui_ImplWin32_Init(window);
@@ -463,8 +519,10 @@ int run(const launcher_app::Session& session, const std::vector<std::wstring>& a
             if (hidden || IsIconic(window)) { Sleep(hidden ? 100 : 50); continue; }
             ImGui_ImplDX12_NewFrame();
             ImGui_ImplWin32_NewFrame();
+            controller_frame(window);
             ImGui::NewFrame();
             frame(launcher, fonts, window, ui, mods_panel);
+            pad_end_frame(fonts, ImGui::GetIO().DisplaySize);
             ImGui::Render();
             renderer.render();
             if (!drew) {

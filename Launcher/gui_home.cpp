@@ -143,7 +143,7 @@ void draw_plate(ImDrawList* draw, const Fonts& fonts, ImVec2 position, const std
 bool action_tile(ImDrawList* draw, const Fonts& fonts, ImVec2 position, ImVec2 size, const char* label,
                  const std::string& detail, bool enabled, bool secondary, const std::string& mark = {}) {
     bool hovered{};
-    const bool pressed = tile_hit("##primary", position, size, enabled, hovered);
+    const bool pressed = tile_hit("##primary", position, size, enabled, hovered, TileNav::drawn);
     const ImVec2 end(position.x + size.x, position.y + size.y);
     const bool blue = enabled && !secondary;
     rough_rect(draw, position, end, blue ? color::blue : enabled ? color::tile : color::tile_grey, 7);
@@ -163,7 +163,7 @@ bool action_tile(ImDrawList* draw, const Fonts& fonts, ImVec2 position, ImVec2 s
 
 bool settings_tile(ImDrawList* draw, const Fonts& fonts, ImVec2 position, ImVec2 size, bool enabled) {
     bool hovered{};
-    const bool pressed = tile_hit("##settings", position, size, enabled, hovered);
+    const bool pressed = tile_hit("##settings", position, size, enabled, hovered, TileNav::drawn);
     const ImVec2 end(position.x + size.x, position.y + size.y);
     rough_rect(draw, position, end, color::tile, 3);
     if (hovered) draw->AddRect(ImVec2(position.x - S(3), position.y - S(3)), ImVec2(end.x + S(3), end.y + S(3)), color::text, 0, 0, S(3));
@@ -187,7 +187,7 @@ bool settings_tile(ImDrawList* draw, const Fonts& fonts, ImVec2 position, ImVec2
 bool mods_tile(ImDrawList* draw, const Fonts& fonts, ImVec2 position, ImVec2 size, bool enabled,
                const std::string& detail, const std::string& mark, bool bad) {
     bool hovered{};
-    const bool pressed = tile_hit("##mods", position, size, enabled, hovered);
+    const bool pressed = tile_hit("##mods", position, size, enabled, hovered, TileNav::drawn);
     const ImVec2 end(position.x + size.x, position.y + size.y);
     rough_rect(draw, position, end, color::tile, 4);
     if (hovered) draw->AddRect(ImVec2(position.x - S(3), position.y - S(3)), ImVec2(end.x + S(3), end.y + S(3)), color::text, 0, 0, S(3));
@@ -341,12 +341,13 @@ void window_buttons(ImDrawList* draw, HWND window, ImVec2 size) {
     const ImVec2 button(S(46), S(34));
     bool hovered{};
     ImVec2 position(size.x - button.x * 2, 0);
-    if (tile_hit("##minimise", position, button, true, hovered)) ShowWindow(window, SW_MINIMIZE);
+    // Out of the controller's reach: up from SETTINGS would land on close.
+    if (tile_hit("##minimise", position, button, true, hovered, TileNav::none)) ShowWindow(window, SW_MINIMIZE);
     if (hovered) draw->AddRectFilled(position, ImVec2(position.x + button.x, button.y), rgba(255, 255, 255, 0.08f));
     const ImVec2 middle(position.x + button.x * 0.5f, button.y * 0.5f);
     draw->AddLine(ImVec2(middle.x - S(5), middle.y), ImVec2(middle.x + S(5), middle.y), color::text, S(1));
     position.x += button.x;
-    if (tile_hit("##close", position, button, true, hovered)) PostMessageW(window, WM_CLOSE, 0, 0);
+    if (tile_hit("##close", position, button, true, hovered, TileNav::none)) PostMessageW(window, WM_CLOSE, 0, 0);
     if (hovered) draw->AddRectFilled(position, ImVec2(position.x + button.x, button.y), rgba(232, 17, 35));
     const ImVec2 cross(position.x + button.x * 0.5f, button.y * 0.5f);
     draw->AddLine(ImVec2(cross.x - S(5), cross.y - S(5)), ImVec2(cross.x + S(5), cross.y + S(5)), color::text, S(1));
@@ -463,6 +464,8 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
         ? (ui.mods_pending == 1 ? std::string("1 MOD UPDATE") : std::format("{} MOD UPDATES", ui.mods_pending))
         : std::string();
     if (action_tile(draw, fonts, primary, primary_size, label, detail, enabled && !modal, secondary, play_mark)) act();
+    // Picking up the controller here shows the selection on PLAY (or whatever it says now).
+    if (pad_woke() && enabled && !modal) pad_focus_here(true);
     if (settings_tile(draw, fonts, settings, ImVec2(column, S(84)), !modal)) ui.settings = true;
     if (time - ui.mods_checked > 5 && !ui.mods) {
         std::size_t enabled_mods = 0, installed = 0;
@@ -495,9 +498,18 @@ void frame(Launcher& launcher, const Fonts& fonts, HWND window, Ui& ui, ModsPane
         mods_panel.scanned = false;
     }
 
-    if (enabled && !secondary && !modal &&
-        (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false))) act();
+    // Enter, or START on a controller, wherever the selection is. Not an Enter
+    // that is only Steam's echo of A, which already pressed the selected tile.
+    const bool direct = enabled && !secondary && !modal;
+    const bool enter = !pad_echo() &&
+        (ImGui::IsKeyPressed(ImGuiKey_Enter, false) || ImGui::IsKeyPressed(ImGuiKey_KeypadEnter, false));
+    if (direct && (enter || pad_pressed(PadButton::start))) act();
     ImGui::EndDisabled();
+    if (!modal) {
+        std::vector<PadHint> hints{{PadButton::a, "SELECT"}};
+        if (direct) hints.push_back({PadButton::start, label});
+        pad_hints(std::move(hints));
+    }
 
     status_tile(fonts, state, ImVec2(S(60), S(200)), S(430), time, launcher.session().paths.logs, modal);
 

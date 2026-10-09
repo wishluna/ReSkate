@@ -48,6 +48,11 @@ void section_caption(const Fonts& fonts, const char* text) {
 // Returns true when a key changed, so the caller can save straight away.
 bool key_bindings(const Fonts& fonts, Settings& settings, Ui& ui) {
     bool changed = false;
+    // A controller cannot pick a key; its B gives up waiting, as Escape does.
+    if (ui.binding && g_capturing_key && pad_pressed(PadButton::b)) {
+        g_capturing_key = false;
+        g_captured_key = VK_ESCAPE;
+    }
     if (ui.binding && !g_capturing_key) {
         const auto key = g_captured_key.exchange(0);
         int& target = ui.binding == 1 ? settings.menu_key : settings.console_key;
@@ -121,14 +126,35 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
     page_title(draw, fonts, ImVec2(rail_x + S(2), top - S(4)), "SETTINGS", title_size);
 
     // ------------------------------------------------ rail
+    static constexpr std::array<const char*, 4> names{"GAME", "DISPLAY", "KEYS", "ADVANCED"};
+    constexpr int tabs = static_cast<int>(names.size());
+    // LB and RB step through the sections, and the selection follows to the
+    // section's tile; it starts on the open section's tile.
+    bool stepped = false;
+    if (!binding && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId)) {
+        const int step = pad_pressed(PadButton::rb) ? 1 : pad_pressed(PadButton::lb) ? -1 : 0;
+        if (step) {
+            ui.settings_tab = (ui.settings_tab + step + tabs) % tabs;
+            stepped = true;
+        }
+    }
     const float rail_top = top + title_size + S(20);
     ImGui::SetCursorPos(ImVec2(rail_x, rail_top));
-    ImGui::BeginChild("##settings_rail", ImVec2(rail_width, bottom - rail_top));
-    static constexpr std::array<const char*, 4> names{"GAME", "DISPLAY", "KEYS", "ADVANCED"};
+    // Flattened, like the other children, so the selection can move between
+    // them. The rail and the section are not level with each other, so the
+    // controller crosses here: right from the rail into the section, left
+    // from the section onto its tile.
+    ImGui::BeginChild("##settings_rail", ImVec2(rail_width, bottom - rail_top), ImGuiChildFlags_NavFlattened);
+    const bool in_rail = ImGui::IsWindowFocused();
+    const bool in_page = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows | ImGuiFocusedFlags_NoPopupHierarchy);
+    const bool enter = pad_stuck() == ImGuiDir_Right && in_rail;
+    const bool to_rail = pad_stuck() == ImGuiDir_Left && in_page && !in_rail;
     ImGui::BeginDisabled(binding);
-    for (int i = 0; i < static_cast<int>(names.size()); ++i)
+    for (int i = 0; i < tabs; ++i) {
         if (nav_tile(fonts, rail_width, names[static_cast<std::size_t>(i)], ui.settings_tab == i))
             ui.settings_tab = i;
+        if (ui.settings_tab == i) pad_focus_here(stepped || to_rail);
+    }
     ImGui::SetCursorPosY(ImGui::GetWindowHeight() - S(38));
     push_primary_button();
     if (ImGui::Button("\xe2\x86\x90  BACK", ImVec2(-1, S(34)))) open = false;
@@ -140,9 +166,10 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
     // Kept to a readable column: settings are sentences, not a table.
     ImGui::SetCursorPos(ImVec2(content_x, top));
     ImGui::BeginChild("##settings_content",
-        ImVec2(std::min(S(760), frame.x - content_x - S(28)), bottom - top));
+        ImVec2(std::min(S(760), frame.x - content_x - S(28)), bottom - top), ImGuiChildFlags_NavFlattened);
     const float footer = ImGui::GetTextLineHeight() + S(16);
-    ImGui::BeginChild("##settings_page", ImVec2(0, ImGui::GetWindowHeight() - footer));
+    ImGui::BeginChild("##settings_page", ImVec2(0, ImGui::GetWindowHeight() - footer), ImGuiChildFlags_NavFlattened);
+    if (enter) pad_enter_window();
     switch (ui.settings_tab) {
     case 0: {
         section_caption(fonts, "GAME FOLDER");
@@ -230,7 +257,10 @@ void settings_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui
     ImGui::PopFont();
     ImGui::EndChild();
 
-    if (!binding && !ImGui::IsAnyItemActive() && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) open = false;
+    if (!binding && ((!ImGui::IsAnyItemActive() && ImGui::IsKeyPressed(ImGuiKey_Escape, false)) || pad_back()))
+        open = false;
+    if (ui.binding) pad_hints({{PadButton::b, "CANCEL"}});
+    else pad_hints({{PadButton::a, "SELECT"}, {PadButton::bumpers, "SECTIONS"}, {PadButton::b, "BACK"}});
     g_drag_allowed = !ImGui::IsAnyItemHovered() && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId);
     ImGui::End();
     if (!open) launcher.save();

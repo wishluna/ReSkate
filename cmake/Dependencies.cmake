@@ -7,7 +7,11 @@ if(WIN32)
         "${PROJECT_SOURCE_DIR}/External/imgui/backends/imgui_impl_dx12.cpp"
         "${PROJECT_SOURCE_DIR}/External/imgui/backends/imgui_impl_win32.cpp")
     target_include_directories(dingosdk_imgui PUBLIC "${PROJECT_SOURCE_DIR}/External/imgui")
-    target_compile_definitions(dingosdk_imgui PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE)
+    # The launcher reads controllers itself (every XInput slot and PlayStation pads, see
+    # Launcher/gui_controller.cpp); the backend's own reader only sees XInput slot 0 and would
+    # fight it. The in-game overlay never used ImGui's gamepad keys.
+    target_compile_definitions(dingosdk_imgui PRIVATE WIN32_LEAN_AND_MEAN NOMINMAX UNICODE _UNICODE
+        IMGUI_IMPL_WIN32_DISABLE_GAMEPAD)
     target_link_libraries(dingosdk_imgui PUBLIC d3d12 dxgi d3dcompiler dwmapi)
 
     add_library(dingosdk_detours STATIC

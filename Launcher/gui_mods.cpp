@@ -121,7 +121,7 @@ std::string summary(const ModsPanel& panel, const mods::Mod& mod) {
 // taller than the plain buttons beside it.
 bool thunderstore_button(const Fonts& fonts, const char* label, float height) {
     const ImVec2 position = ImGui::GetCursorScreenPos(), size(ImGui::GetContentRegionAvail().x, height);
-    const bool pressed = ImGui::InvisibleButton(label, size);
+    const bool pressed = ImGui::InvisibleButton(label, size, ImGuiButtonFlags_EnableNav);
     const bool hovered = ImGui::IsItemHovered();
     if (hovered) ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
     auto* draw = ImGui::GetWindowDrawList();
@@ -159,10 +159,17 @@ bool thunderstore_button(const Fonts& fonts, const char* label, float height) {
 }
 
 bool rail(const Fonts& fonts, ModsPanel& panel, HWND window, float width,
-          const std::vector<const thunderstore::Package*>& pending, bool installing) {
+          const std::vector<const thunderstore::Package*>& pending, bool installing, bool switched) {
     const auto installed = panel.list.entries.size();
     const auto& store = panel.store;
     bool leave = false;
+    // The rail and the list are not level with each other, so the controller
+    // crosses here: right from the rail into the list, left from the page's
+    // content onto the open page's tile.
+    const bool in_rail = ImGui::IsWindowFocused();
+    const bool in_page = ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows | ImGuiFocusedFlags_NoPopupHierarchy);
+    const bool to_rail = pad_stuck() == ImGuiDir_Left && in_page && !in_rail;
+    panel.pad_enter = pad_stuck() == ImGuiDir_Right && in_rail;
 
     ImGui::BeginDisabled(installing);
     if (nav_tile(fonts, width, "MY MODS", panel.tab == 0,
@@ -171,10 +178,12 @@ bool rail(const Fonts& fonts, ModsPanel& panel, HWND window, float width,
                             : pending.size() == 1 ? std::string("1 update on Thunderstore")
                                                   : std::format("{} updates on Thunderstore", pending.size())))
         panel.tab = 0;
+    if (panel.tab == 0) pad_focus_here(switched || to_rail);
     if (nav_tile(fonts, width, "GET MODS", panel.tab == 1,
             store.loaded ? std::to_string(store.packages.size()) : std::string("..."), false,
             store.loaded ? std::string() : std::string("Loading the Thunderstore listing")))
         panel.tab = 1;
+    if (panel.tab == 1) pad_focus_here(switched || to_rail);
 
     ImGui::Dummy(ImVec2(0, S(8)));
     if (!pending.empty()) {
@@ -361,6 +370,12 @@ void installed_row(const Fonts& fonts, ModsPanel& panel, const thunderstore::Ins
     const bool ticked = panel.marked.contains(mod.name);
     const bool pressed = list_row("##row", width, tall, ticked);
     bool menu = ImGui::IsItemClicked(ImGuiMouseButton_Right);
+    if (panel.pad_enter && start.y >= ImGui::GetWindowPos().y) {   // the first row in view
+        pad_focus_here(true);
+        panel.pad_enter = false;
+    }
+    // Whether the controller's selection is anywhere on this row, for X and Y.
+    bool focused = ImGui::IsItemFocused();
     if (pressed) {
         // Ctrl and Shift pick, as they do in a file list; a plain click opens the mod.
         if (ImGui::GetIO().KeyShift) mark(panel, view, position, true, true);
@@ -377,7 +392,11 @@ void installed_row(const Fonts& fonts, ModsPanel& panel, const thunderstore::Ins
 
     ImGui::SetCursorScreenPos(ImVec2(start.x + S(14), start.y + (tall - ImGui::GetFrameHeight()) * 0.5f));
     bool tick = ticked;
+    // A shade lighter than usual, or it vanishes into a hovered or selected row.
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImGui::ColorConvertU32ToFloat4(rgba(58, 58, 62)));
     if (ImGui::Checkbox("##pick", &tick)) mark(panel, view, position, tick, ImGui::GetIO().KeyShift);
+    ImGui::PopStyleColor();
+    focused |= ImGui::IsItemFocused();
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip("Tick mods to change several at once.\nShift-click ticks every mod in between.");
 
@@ -386,6 +405,7 @@ void installed_row(const Fonts& fonts, ModsPanel& panel, const thunderstore::Ins
     const float more_x = right - S(12) - more;
     ImGui::SetCursorScreenPos(ImVec2(more_x, start.y + (tall - more) * 0.5f));
     if (more_button("##more", more)) menu = true;
+    focused |= ImGui::IsItemFocused();
     if (ImGui::IsItemHovered()) ImGui::SetTooltip("More");
 
     const float switch_x = more_x - S(12) - S(42);
@@ -393,6 +413,7 @@ void installed_row(const Fonts& fonts, ModsPanel& panel, const thunderstore::Ins
     bool enabled = entry.enabled;
     if (toggle("##enabled", &enabled))
         request = {enabled ? Request::Kind::enable : Request::Kind::disable, {mod.name}};
+    focused |= ImGui::IsItemFocused();
     if (ImGui::IsItemHovered())
         ImGui::SetTooltip(entry.enabled ? "Enabled: loads when Skate starts" : "Disabled: stays installed, does not load");
 
@@ -403,12 +424,14 @@ void installed_row(const Fonts& fonts, ModsPanel& panel, const thunderstore::Ins
     ImGui::BeginDisabled(!reorder || index == 0);
     if (ImGui::ArrowButton("##up", ImGuiDir_Up)) request = {Request::Kind::up, {mod.name}};
     ImGui::EndDisabled();
+    focused |= ImGui::IsItemFocused();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled))
         ImGui::SetTooltip("%s", reorder ? "Load earlier: where two mods change the same thing, the higher one wins" : fixed);
     ImGui::SameLine(0, S(6));
     ImGui::BeginDisabled(!reorder || index + 1 == static_cast<int>(panel.list.entries.size()));
     if (ImGui::ArrowButton("##down", ImGuiDir_Down)) request = {Request::Kind::down, {mod.name}};
     ImGui::EndDisabled();
+    focused |= ImGui::IsItemFocused();
     if (ImGui::IsItemHovered(ImGuiHoveredFlags_AllowWhenDisabled)) ImGui::SetTooltip("%s", reorder ? "Load later" : fixed);
 
     float next = arrows_x - S(14);
@@ -419,6 +442,7 @@ void installed_row(const Fonts& fonts, ModsPanel& panel, const thunderstore::Ins
         push_primary_button();
         if (ImGui::Button("UPDATE", ImVec2(button, S(30)))) request = {Request::Kind::update, {mod.name}};
         pop_primary_button();
+        focused |= ImGui::IsItemFocused();
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Thunderstore has v%s", package->latest().number.c_str());
         next -= S(14);
     }
@@ -443,6 +467,14 @@ void installed_row(const Fonts& fonts, ModsPanel& panel, const thunderstore::Ins
         draw->AddText(fonts.body, fonts.body->FontSize, ImVec2(text_x, start.y + S(37)), color::muted, detail.c_str(),
             nullptr, 0, &clip);
 
+    // X switches the mod on or off and Y opens its menu, from anywhere on the row.
+    if (focused) {
+        panel.pad_row = mod.name;
+        panel.pad_row_on = entry.enabled;
+        if (pad_pressed(PadButton::x))
+            request = {entry.enabled ? Request::Kind::disable : Request::Kind::enable, {mod.name}};
+        if (pad_pressed(PadButton::y)) menu = true;
+    }
     if (menu) ImGui::OpenPopup("##menu");
     if (ImGui::BeginPopup("##menu")) {
         // Opened on one of several ticked mods, the menu is about all of them.
@@ -614,7 +646,7 @@ void installed_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, co
     // ------------------------------------------------ the list, and under it how its order works
     const float hint = ImGui::GetTextLineHeightWithSpacing();
     const float body = std::max(S(120), height - (ImGui::GetCursorPosY() - top) - hint);
-    ImGui::BeginChild("##mod_list", ImVec2(0, body), ImGuiChildFlags_Borders);
+    ImGui::BeginChild("##mod_list", ImVec2(0, body), ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened);
     const auto note = [](const char* first, const char* second = nullptr) {
         ImGui::Spacing();
         ImGui::Indent(S(14));
@@ -755,7 +787,8 @@ void mod_overview(const Fonts& fonts, ModsPanel& panel, const thunderstore::Inst
         save(panel);
     }
     ImGui::SameLine(extent.x - S(28) - S(110));
-    if (ImGui::Button("CLOSE", ImVec2(S(110), 0))) close();
+    if (ImGui::Button("CLOSE", ImVec2(S(110), 0)) || pad_back(1)) close();
+    pad_hints({{PadButton::a, "SELECT"}, {PadButton::b, "CLOSE"}});
     ImGui::EndPopup();
 }
 
@@ -807,13 +840,17 @@ void install_modal(const Fonts& fonts, ModsPanel& panel, ImVec2 size) {
     const bool pressed = ImGui::Button(cancelling ? "CANCELLING" : "CANCEL", ImVec2(S(130), S(34)));
     ImGui::EndDisabled();
     ImGui::PopStyleColor(3);
-    // Escape too: the button is the only way out of this panel otherwise.
-    if (!cancelling && (pressed || ImGui::IsKeyPressed(ImGuiKey_Escape, false))) {
+    // Escape and the controller's B too: the button is the only way out of this panel otherwise.
+    const bool back = pad_back();
+    if (!cancelling && (pressed || back || ImGui::IsKeyPressed(ImGuiKey_Escape, false))) {
         panel.cancel = true;
         logging::write(logging::Level::info, logging::Channel::launcher,
             pressed ? "Mod install cancelled by the Cancel button."
+            : back  ? "Mod install cancelled with the controller's B."
                     : "Mod install cancelled with Escape.");
     }
+    if (cancelling) pad_hints({});
+    else pad_hints({{PadButton::a, "SELECT"}, {PadButton::b, "CANCEL"}});
     ImGui::End();
 }
 
@@ -948,6 +985,7 @@ void mods_broken_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui&
     }
     ImGui::SameLine(frame.x - S(28) - S(110));
     if (ImGui::Button("Play anyway", ImVec2(S(110), 0))) launcher.play_anyway();
+    pad_hints({{PadButton::a, "SELECT"}});
     ImGui::End();
 }
 
@@ -1020,6 +1058,7 @@ void mods_outdated_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, U
         ui.mods_updates_ignored = true;   // asked and answered; do not nag again
         launcher.play();
     }
+    pad_hints({{PadButton::a, "SELECT"}});
     ImGui::End();
 }
 
@@ -1044,6 +1083,14 @@ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, Mo
         panel.scanned = false;
         ui.play_after_install = false;   // leaving the page is a change of mind
     };
+    panel.pad_row.clear();
+    // LB and RB switch between MY MODS and GET MODS, and the selection follows to the page's tile.
+    bool switched = false;
+    if (!installing && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) &&
+        (pad_pressed(PadButton::lb) || pad_pressed(PadButton::rb))) {
+        panel.tab = 1 - panel.tab;
+        switched = true;
+    }
 
     // The page covers the main screen's buttons, so it draws its own.
     window_buttons(draw, window, frame);
@@ -1055,12 +1102,18 @@ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, Mo
 
     const float rail_top = top + title_size * 2 + S(16);
     ImGui::SetCursorPos(ImVec2(rail_x, rail_top));
-    ImGui::BeginChild("##rail", ImVec2(rail_width, bottom - rail_top));
-    const bool leave = rail(fonts, panel, window, rail_width, pending, installing);
+    // Flattened, like the lists inside the content: the controller moves
+    // straight from the rail into a list and back.
+    ImGui::BeginChild("##rail", ImVec2(rail_width, bottom - rail_top), ImGuiChildFlags_NavFlattened);
+    const bool leave = rail(fonts, panel, window, rail_width, pending, installing, switched);
     ImGui::EndChild();
 
     ImGui::SetCursorPos(ImVec2(content_x, top));
-    ImGui::BeginChild("##content", ImVec2(frame.x - content_x - S(28), bottom - top));
+    ImGui::BeginChild("##content", ImVec2(frame.x - content_x - S(28), bottom - top), ImGuiChildFlags_NavFlattened);
+    if (panel.pad_enter_top) {
+        pad_enter_window();
+        panel.pad_enter_top = false;
+    }
     // With nothing to say, the list runs all the way down to BACK's bottom
     // edge; a message takes two lines off it until it is gone.
     const float status = panel.message.empty() ? S(4) : ImGui::GetTextLineHeight() * 2 + S(12);
@@ -1075,13 +1128,28 @@ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, Mo
         ImGui::PopTextWrapPos();
     }
     ImGui::EndChild();
+    // No row took the selection (the list is empty): the search box will.
+    panel.pad_enter_top = panel.pad_enter;
+    panel.pad_enter = false;
 
+    {
+        std::vector<PadHint> hints{{PadButton::a, "SELECT"}};
+        if (!panel.pad_row.empty() && panel.tab == 0) {
+            hints.push_back({PadButton::x, panel.pad_row_on ? "DISABLE" : "ENABLE"});
+            hints.push_back({PadButton::y, "MORE"});
+        } else if (!panel.pad_row.empty()) {
+            hints.push_back({PadButton::x, panel.pad_row_on ? "UNTICK" : "TICK"});
+        }
+        hints.push_back({PadButton::bumpers, panel.tab == 0 ? "GET MODS" : "MY MODS"});
+        hints.push_back({PadButton::b, panel.tab == 0 && !panel.marked.empty() ? "CLEAR TICKS" : "BACK"});
+        pad_hints(std::move(hints));
+    }
     if (panel.tab == 1) package_overview(fonts, panel, frame, installing);
     else mod_overview(fonts, panel, installed, frame, installing);
     if (leave) close();
-    if (!installing && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) && !ImGui::IsAnyItemActive() &&
-        ImGui::IsKeyPressed(ImGuiKey_Escape, false)) {
-        // Escape lets go of the ticked mods first, and leaves the page after that.
+    if (!installing && ((!ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId) && !ImGui::IsAnyItemActive() &&
+                         ImGui::IsKeyPressed(ImGuiKey_Escape, false)) || pad_back())) {
+        // Escape (or B) lets go of the ticked mods first, and leaves the page after that.
         if (panel.tab == 0 && !panel.marked.empty()) panel.marked.clear();
         else close();
     }
@@ -1115,7 +1183,10 @@ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, Mo
         if (bytes) ImGui::TextDisabled("That frees %s.", size_text(bytes).c_str());
         ImGui::PopTextWrapPos();
         ImGui::Spacing();
-        if (ImGui::Button("Cancel", ImVec2(S(110), 0))) { panel.confirm_remove.clear(); ImGui::CloseCurrentPopup(); }
+        if (ImGui::Button("Cancel", ImVec2(S(110), 0)) || pad_back(1)) {
+            panel.confirm_remove.clear();
+            ImGui::CloseCurrentPopup();
+        }
         ImGui::SameLine();
         push_primary_button();
         if (ImGui::Button("UNINSTALL", ImVec2(S(110), 0))) {
@@ -1151,6 +1222,7 @@ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, Mo
             ImGui::CloseCurrentPopup();
         }
         pop_primary_button();
+        pad_hints({{PadButton::a, "SELECT"}, {PadButton::b, "CANCEL"}});
         ImGui::EndPopup();
     }
     ImGui::SetNextWindowSize(ImVec2(S(440), 0));
@@ -1160,7 +1232,7 @@ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, Mo
             panel.conflict_name.c_str());
         ImGui::PopTextWrapPos();
         ImGui::Spacing();
-        if (ImGui::Button("Cancel", ImVec2(S(110), 0))) {
+        if (ImGui::Button("Cancel", ImVec2(S(110), 0)) || pad_back(1)) {
             panel.conflict_name.clear();
             ImGui::CloseCurrentPopup();
         }
@@ -1173,6 +1245,7 @@ void mods_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui, Mo
             start_install(panel, source, true);
         }
         pop_primary_button();
+        pad_hints({{PadButton::a, "SELECT"}, {PadButton::b, "CANCEL"}});
         ImGui::EndPopup();
     }
     g_drag_allowed = !ImGui::IsAnyItemHovered() && !ImGui::IsPopupOpen(nullptr, ImGuiPopupFlags_AnyPopupId);

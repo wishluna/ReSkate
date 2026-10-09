@@ -107,8 +107,13 @@ ImVec2 begin_page(const char* id, ImVec2 size);
 // Minimise and close in the top-right corner. A page draws its own: it covers
 // the main screen's.
 void window_buttons(ImDrawList* draw, HWND window, ImVec2 size);
+// How a tile drawn by hand shows the controller's selection: with ImGui's
+// outline, with its own (it draws one while hovered, and the selected item
+// counts as hovered), or not at all because the controller never goes there.
+enum class TileNav { outline, drawn, none };
 // An invisible button at an absolute screen position, for a tile drawn by hand.
-bool tile_hit(const char* id, ImVec2 position, ImVec2 size, bool enabled, bool& hovered);
+bool tile_hit(const char* id, ImVec2 position, ImVec2 size, bool enabled, bool& hovered,
+              TileNav nav = TileNav::outline);
 // A tile in a page's nav rail, blue while its page is open, like skate.'s
 // selected tile. Leaves the cursor where the next tile goes.
 bool nav_tile(const Fonts& fonts, float width, const char* label, bool selected, const std::string& count = {},
@@ -138,7 +143,9 @@ void virtual_rows(int count, Height height, Row row) {
     float y = start.y;
     for (int index = 0; index < count; ++index) {
         const float tall = height(index);
-        if (y + tall >= scroll && y <= scroll + view) {
+        // One row past each edge too: the controller's selection can only move
+        // on to a row that was drawn, and scrolls it into view when it does.
+        if (y + tall * 2 >= scroll && y <= scroll + view + tall) {
             ImGui::SetCursorPos(ImVec2(start.x, y));
             row(index, tall);
         }
@@ -162,6 +169,55 @@ inline std::atomic<unsigned> g_captured_key{};
 // Paths dropped on the window, picked up by the next frame.
 inline std::mutex g_dropped_mutex;
 inline std::vector<fs::path> g_dropped;
+
+// ---------------------------------------------------------------- controller (gui_controller.cpp)
+
+// Buttons by their Xbox names; a PlayStation pad's are drawn as its own shapes.
+enum class PadButton { a, b, x, y, lb, rb, start, bumpers /* LB and RB as one prompt */ };
+struct PadHint {
+    PadButton button;
+    std::string label;
+};
+
+// Reads every controller (each XInput slot, and DualShock 4 and DualSense pads
+// over HID) and hands A, B and the D-pad (the left stick too) to ImGui's
+// navigation; the right stick scrolls. Call between the backend's NewFrame and
+// ImGui::NewFrame. Nothing is read while another window is in front.
+void controller_frame(HWND window);
+// The mouse or keyboard was used: the selection and the prompts go away.
+void controller_other_input();
+// Something was plugged in or removed: ask every XInput slot again.
+void controller_devices_changed();
+// The controller was used since the mouse and keyboard were.
+bool pad_active();
+// A controller button went down or up a moment ago. Steam Input's desktop
+// layout turns buttons into keys (A into Enter, B into Escape, the D-pad into
+// arrows) for programs outside Steam, so a key now is likely that button again:
+// not the keyboard being used, and not something to act on a second time.
+bool pad_echo();
+// The controller took over this frame; its first press only shows the selection.
+bool pad_woke();
+// True on the frame `button` went down.
+bool pad_pressed(PadButton button);
+// The direction the selection could not move in on the last frame, or
+// ImGuiDir_None. ImGui moves sideways only to items level with the selected
+// one, and a page's rail and its content are not, so pages cross between them
+// themselves.
+ImGuiDir pad_stuck();
+// Moves the selection to the first item of the current window, as if the
+// window had just appeared.
+void pad_enter_window();
+// B as the way back or out, unless it only let go of a text field or closed a
+// combo or menu (ImGui does that). `popups` is how many popups deep the caller is.
+bool pad_back(int popups = 0);
+// The controller's selection starts on the last item when its window appears;
+// `now` moves it there at once.
+void pad_focus_here(bool now = false);
+// The prompts along the bottom edge. The screen that takes the controller's
+// input sets them, replacing those of the screens under it.
+void pad_hints(std::vector<PadHint> hints);
+// Draws them, and hides the pointer while the controller is in use.
+void pad_end_frame(const Fonts& fonts, ImVec2 size);
 
 // ---------------------------------------------------------------- settings
 
@@ -402,6 +458,15 @@ struct ModsPanel {
     std::vector<std::string> confirm_remove;   // folders awaiting "Uninstall" confirmation
     fs::path conflict_source;            // install waiting for "Replace" confirmation
     std::string conflict_name;
+    // The row the controller's selection is on this frame (a folder on MY MODS,
+    // a package on GET MODS) and whether it is on (enabled, or ticked to
+    // install), so the prompts can say what X does.
+    std::string pad_row;
+    bool pad_row_on{};
+    // Coming in from the rail: the first row in view takes the selection, or
+    // with no rows, the first thing on the page does on the next frame.
+    bool pad_enter{};
+    bool pad_enter_top{};
 
     std::thread worker;
     std::atomic<bool> installing{};

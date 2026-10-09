@@ -46,7 +46,12 @@ void sign_in_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui)
     ImGui::PushFont(fonts.caption);
     ImGui::TextDisabled("OR SIGN IN WITH YOUR ACCOUNT");
     ImGui::PopFont();
-    if (ui.focus) { ImGui::SetKeyboardFocusHere(); ui.focus = false; }
+    // Typing starts in the name, except with a controller: it starts on the QR
+    // code, the one way in that needs no keyboard.
+    if (ui.focus) {
+        if (!pad_active()) ImGui::SetKeyboardFocusHere();
+        ui.focus = false;
+    }
     ImGui::SetNextItemWidth(-1);
     ImGui::InputTextWithHint("##username", "Steam account name", ui.username.data(), ui.username.size(),
         ImGuiInputTextFlags_CharsNoBlank);
@@ -59,7 +64,7 @@ void sign_in_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui)
     const bool valid = !username.empty() && username.find_first_not_of(
         "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_") == std::string_view::npos;
     ImGui::SetCursorPosY(panel.y - S(24) - ImGui::GetFrameHeight());
-    if (ImGui::Button("CANCEL", ImVec2(S(110), 0))) { wipe(ui.password); ui.sign_in = false; }
+    if (ImGui::Button("CANCEL", ImVec2(S(110), 0)) || pad_back()) { wipe(ui.password); ui.sign_in = false; }
     ImGui::SameLine(panel.x - S(28) - S(130));
     ImGui::BeginDisabled(!valid);
     push_primary_button();
@@ -67,6 +72,7 @@ void sign_in_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, Ui& ui)
     pop_primary_button();
     if (sign_in || (entered && valid)) start(false);
     ImGui::EndDisabled();
+    pad_hints({{PadButton::a, "SELECT"}, {PadButton::b, "CANCEL"}});
     ImGui::End();
 }
 
@@ -106,7 +112,7 @@ void prompt_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, const up
     }
     const char* value = password ? ui.password.data() : ui.code.data();
     ImGui::SetCursorPosY(panel.y - S(24) - ImGui::GetFrameHeight());
-    if (ImGui::Button("CANCEL", ImVec2(S(110), 0))) {
+    if (ImGui::Button("CANCEL", ImVec2(S(110), 0)) || pad_back()) {
         wipe(ui.password);
         ui.code.fill(0);
         launcher.answer(std::nullopt);
@@ -122,6 +128,7 @@ void prompt_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, const up
         ui.code.fill(0);
     }
     ImGui::EndDisabled();
+    pad_hints({{PadButton::a, "SELECT"}, {PadButton::b, "CANCEL"}});
     ImGui::End();
 }
 
@@ -156,7 +163,8 @@ void qr_window(Launcher& launcher, const Fonts& fonts, ImVec2 size, const std::v
             }
     ImGui::SetCursorPosY(panel.y - S(24) - ImGui::GetFrameHeight());
     ImGui::SetCursorPosX(panel.x - S(28) - S(110));
-    if (ImGui::Button("CANCEL", ImVec2(S(110), 0))) launcher.cancel();
+    if (ImGui::Button("CANCEL", ImVec2(S(110), 0)) || pad_back()) launcher.cancel();
+    pad_hints({{PadButton::a, "SELECT"}, {PadButton::b, "CANCEL"}});
     ImGui::End();
 }
 
@@ -173,7 +181,8 @@ void steam_offline_window(const Fonts& fonts, ImVec2 size, Ui& ui) {
     ImGui::PopTextWrapPos();
     ImGui::SetCursorPosY(panel.y - S(24) - ImGui::GetFrameHeight());
     ImGui::SetCursorPosX(panel.x - S(28) - S(110));
-    if (ImGui::Button("OK", ImVec2(S(110), 0))) ui.steam_offline = false;
+    if (ImGui::Button("OK", ImVec2(S(110), 0)) || pad_back()) ui.steam_offline = false;
+    pad_hints({{PadButton::a, "SELECT"}, {PadButton::b, "CLOSE"}});
     ImGui::End();
 }
 

@@ -475,7 +475,7 @@ void browse_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, float
     const auto packages = visible_packages(store, installed);
 
     // ------------------------------------------------ the list
-    ImGui::BeginChild("##store_list", ImVec2(0, body), ImGuiChildFlags_Borders);
+    ImGui::BeginChild("##store_list", ImVec2(0, body), ImGuiChildFlags_Borders | ImGuiChildFlags_NavFlattened);
     const auto note = [](const char* text) {
         ImGui::Spacing();
         ImGui::Indent(S(14));
@@ -523,6 +523,12 @@ void browse_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, float
             store.selected = package.full_name;
             store.overview = false;
         }
+        if (panel.pad_enter && start.y >= ImGui::GetWindowPos().y) {   // coming in from the rail: the first row in view
+            pad_focus_here(true);
+            panel.pad_enter = false;
+        }
+        // Whether the controller's selection is anywhere on this row, for X.
+        bool focused = ImGui::IsItemFocused();
         const float right = start.x + width;
         const float text_x = start.x + S(82);
         mod_icon(panel, &package, ImVec2(start.x + S(14), start.y + S(11)), S(56));
@@ -540,26 +546,39 @@ void browse_page(Launcher& launcher, const Fonts& fonts, ModsPanel& panel, float
         const float button_x = tick_x - S(12) - button;
         ImGui::SetCursorScreenPos(ImVec2(tick_x, start.y + (tall - box) * 0.5f));
         ImGui::BeginDisabled(tool);
+        // A shade lighter than usual, or it vanishes into a hovered or selected row.
+        ImGui::PushStyleColor(ImGuiCol_FrameBg, ImGui::ColorConvertU32ToFloat4(rgba(58, 58, 62)));
         if (ImGui::Checkbox("##pick", &ticked)) pick(store, package.full_name, ticked);
+        ImGui::PopStyleColor();
         ImGui::EndDisabled();
+        focused |= ImGui::IsItemFocused();
         if (ImGui::IsItemHovered())
             ImGui::SetTooltip(tool ? "A tool, not a game mod: get it from its Thunderstore page."
                                    : "Tick to install this with the others you tick");
         ImGui::SetCursorScreenPos(ImVec2(button_x, start.y + (tall - S(32)) * 0.5f));
         if (tool) {
             if (ImGui::Button("THUNDERSTORE", ImVec2(button, S(32)))) open_url(package.package_url);
+            focused |= ImGui::IsItemFocused();
         } else if (update) {
             push_primary_button();
             if (ImGui::Button("UPDATE", ImVec2(button, S(32)))) start_store_install(panel, {package});
             pop_primary_button();
+            focused |= ImGui::IsItemFocused();
         } else if (found == installed.end()) {
             push_primary_button();
             if (ImGui::Button("INSTALL", ImVec2(button, S(32)))) start_store_install(panel, {package});
             pop_primary_button();
+            focused |= ImGui::IsItemFocused();
         } else {
             const auto mark = "INSTALLED";
             badge(draw, fonts, ImVec2(button_x + button - badge_width(fonts, mark),
                 start.y + (tall - fonts.caption->FontSize - S(8)) * 0.5f), mark, color::good, color::ink);
+        }
+        // X ticks the mod to install with the others, from anywhere on the row.
+        if (focused && !tool) {
+            panel.pad_row = package.full_name;
+            panel.pad_row_on = ticked;
+            if (pad_pressed(PadButton::x)) pick(store, package.full_name, !ticked);
         }
 
         auto line = version.description;
@@ -677,7 +696,8 @@ void package_overview(const Fonts& fonts, ModsPanel& panel, ImVec2 size, bool in
     if (ImGui::Checkbox("Install with the others I tick", &ticked)) pick(store, package.full_name, ticked);
     ImGui::EndDisabled();
     ImGui::SameLine(extent.x - S(28) - S(110));
-    if (ImGui::Button("CLOSE", ImVec2(S(110), 0))) close();
+    if (ImGui::Button("CLOSE", ImVec2(S(110), 0)) || pad_back(1)) close();
+    pad_hints({{PadButton::a, "SELECT"}, {PadButton::b, "CLOSE"}});
     ImGui::EndPopup();
 }
 
